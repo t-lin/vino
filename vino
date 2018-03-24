@@ -146,6 +146,11 @@ def sanity_test(nodes):
 
         time.sleep(3)
 
+        # First, write hostname of VM to its /etc/hosts
+        # Note the double escaping of forward-slash
+        ssh.exec_command("sudo sed -E -i 's/(localhost)/\\1 '`hostname`'/g' /etc/hosts")
+        time.sleep(1)
+
         # Check VM's internet connectivity
         stdin, stdout, stderr = ssh.exec_command("ping -c 2 www.google.ca")
         stdin.close()
@@ -282,7 +287,8 @@ def setup_hosts(hosts_dict, switches_dict):
                     time.sleep(1)
                     ssh.exec_command("mac=`sudo ovs-vsctl get interface p%s mac_in_use`;sudo ovs-vsctl set interface p%s mac=\"$mac\"" % (count, count));
                     time.sleep(1)
-                    ssh.exec_command("sudo ifconfig p%s %s/24 up" %(count, vxlan_ip))
+                    ssh.exec_command("sudo ifconfig p%s mtu 1400 %s/24 up" %(count, vxlan_ip))
+                    time.sleep(1)
 
                     #get switch ip addr
                     switch_ip = switches_dict[sw_name]["ip_addr"]
