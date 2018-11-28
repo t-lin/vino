@@ -32,9 +32,13 @@ from quantumclient.v2_0 import client as qclient
 from quantumclient.quantum import v2_0 as quantumv20
 from prettytable import PrettyTable
 
+DELETE_OPTIONS = ('yes', 'no', 'yesall', 'noall')
+DELETE_CHOICE = ""
+
+
 def add_secrules(nova, secgroup):
     """
-    Creates secgroup
+    Creates secgroup rules
     parameters
         nova:-nova client object
     """
@@ -302,10 +306,24 @@ def setup_hosts(hosts_dict, switches_dict):
 
 #Delete VMs that match instance prefix
 def delete_vms(nova):
+    global DELETE_OPTIONS, DELETE_CHOICE
+
+    region = nova.client.region_name
     for s in nova.servers.list():
         if config.instance_prefix in s.name:
-            print "Deleting " + s.name
-            s.delete()
+            while DELETE_CHOICE not in DELETE_OPTIONS:
+                print "\nWARNING: Found a pre-existing VM with the same prefix (%s) in region %s. Delete it?" % (s.name, region)
+                DELETE_CHOICE = raw_input("         [yes / no / yesall / noall] => ")
+                DELETE_CHOICE = DELETE_CHOICE.lower()
+                if DELETE_CHOICE not in DELETE_OPTIONS:
+                    print "Invalid option, try again."
+
+            if DELETE_CHOICE in ("yes", "yesall"):
+                print "Deleting " + s.name
+                s.delete()
+
+            if DELETE_CHOICE in ("yes", "no"):
+                DELETE_CHOICE = "" # Reset for next loop
 
 #walks through the topology dict and
 #'completes' the topology, i.e.
@@ -340,22 +358,25 @@ def complete_topology():
 if __name__ == "__main__":
 
     complete_topology()
-    #print "EXITING"
-    #sys.exit(0)
 
     #Create nova and quantum instance
     nova = nclient.Client(config.username, config.password, config.tenant_name, config.auth_url, region_name=config.region_name, no_cache=True)
     quantum = qclient.Client(username=config.username, password=config.password, tenant_name=config.tenant_name, auth_url=config.auth_url, region_name=config.region_name)
 
-
     #Delete any existing VMs
     delete_vms(nova)
 
-
-
-    #List of security groups
+    # Create security group if it doesn't exist, then populate it
     seclist = [config.sec_group_name]
-    secgroup=nshell._get_secgroup(nova, config.sec_group_name)
+    try:
+        secgroup = nshell._get_secgroup(nova, config.sec_group_name)
+    except Exception as e:
+        if "not found" in e.message:
+            print "Security group does not exist, creating..."
+            secgroup = nova.security_groups.create(config.sec_group_name, "For ViNO")
+        else:
+            raise
+
     add_secrules(nova, secgroup)
 
     #nic
