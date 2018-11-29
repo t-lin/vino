@@ -308,8 +308,9 @@ def setup_hosts(hosts_dict, switches_dict):
                     count += 1
         ssh.close()
 
-# Delete VMs passed in from list
-# Returns list of deleted VMs in format of:
+# Delete VMs passed in via oldVMList. All VMs should belong in the same region and tenant.
+# Returns list of deleted VMs and VMs in oldVMList but not found by Nova.
+# Both input and output lists have the following format:
 #   [(VM UUID, VM NAME), (...), ...)
 def delete_vms(nova, oldVMList):
     global DELETE_OPTIONS, DELETE_CHOICE
@@ -318,7 +319,13 @@ def delete_vms(nova, oldVMList):
     region = nova.client.region_name
     deleted = []
 
-    for s in nova.servers.list():
+    # First, let's fill 'deleted' with VMs which appear in the ViNO node file
+    # but no longer exist. This may occur if a user manually deletes it.
+    currVMs = nova.servers.list()
+    currVMSet = set([(vm.id, vm.name) for vm in currVMs])
+    deleted = list(set(oldVMList) - currVMSet)
+
+    for s in currVMs:
         if s.id in oldVMIDs:
             while DELETE_CHOICE not in DELETE_OPTIONS:
                 print "\nWARNING: Found a pre-existing VM created by ViNO (%s) in region %s. Delete it?" % (s.name, region)
@@ -374,7 +381,7 @@ def complete_topology():
 #
 # Can filter results via input parameter List 'relevantRegions'
 #   - If this is None, then don't filter (i.e. return all)
-def get_vino_node_file(relevantRegions):
+def get_vino_node_file(relevantRegions = None):
     old_nodes = {}
 
     homePath = os.environ['HOME']
@@ -445,16 +452,38 @@ def update_vino_node_file(nodeList, region, delete = False):
 
 if __name__ == "__main__":
 
+    if len(sys.argv) > 2:
+        print "ERROR: Incorrect # of args"
+        print "Usage: ./vino [cleanup (optional)]"
+        print "\tTo deploy a topology, run: ./vino"
+        print "\tTo clean up old topology nodes, run: ./vino cleanup"
+        sys.exit();
+    else:
+        if len(sys.argv) == 2:
+            if sys.argv[1] != "cleanup":
+                print "ERROR: Unknown argument. Only 'cleanup' currently accepted."
+                sys.exit();
+
+            bCleanup = True
+        else:
+            bCleanup = False
+
     complete_topology()
     regions = set()
-    for spec in topology.hosts.values():
-        regions.add(spec['region'])
 
-    for spec in topology.switches.values():
-        regions.add(spec['region'])
+    if bCleanup:
+        # Read file to find any existing VMs
+        oldVMs = get_vino_node_file()
+        regions = oldVMs.keys()
+    else:
+        # Get list of regions from toplogy file
+        for spec in topology.hosts.values():
+            regions.add(spec['region'])
 
-    # Read file to find any existing VMs
-    oldVMs = get_vino_node_file(regions)
+        for spec in topology.switches.values():
+            regions.add(spec['region'])
+
+        oldVMs = get_vino_node_file(regions)
 
     # Create a nova and neutron clients per region
     reg2nova = {}
@@ -470,6 +499,11 @@ if __name__ == "__main__":
     for reg in oldVMs.keys():
         deleted = delete_vms(reg2nova[reg], oldVMs[reg])
         update_vino_node_file(deleted, reg, delete = True)
+
+    print "Done cleanup of old VMs."
+
+    if bCleanup:
+        sys.exit();
 
     print "\n===================="
     print "Creating VMs for topology..."
@@ -503,14 +537,14 @@ if __name__ == "__main__":
                 vm_dict = create_node(node, node_name, nova, nics)
                 vm_dict["network_id"] = network_resource
                 hosts[node_name] = vm_dict
-                update_vino_node_file([(vm_dict["vm"].id, node_name)], reg)
+                update_vino_node_file([(vm_dict["vm"].id, vm_dict["instance_name"])], reg)
 
         for node_name, node in topology.switches.items():
             if reg == node.get('region', config.region_name):
                 vm_dict = create_node(node, node_name, nova, nics)
                 vm_dict["network_id"] = network_resource
                 switches[node_name] = vm_dict
-                update_vino_node_file([(vm_dict["vm"].id, node_name)], reg)
+                update_vino_node_file([(vm_dict["vm"].id, vm_dict["instance_name"])], reg)
 
     nodes = dict(hosts.items() + switches.items()) #Joint dict of all nodes
 
