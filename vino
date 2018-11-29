@@ -44,7 +44,7 @@ def add_secrules(nova, secgroup):
         nova:-nova client object
     """
     #TODO: Check rule does not exist, use secgroup.rules or nova.security_group_rules.find()
-    rules = [("TCP", 22, 22), ("UDP", 4789, 4789), ("ICMP", -1, 255)]
+    rules = [("TCP", 22, 22), ("UDP", 4789, 4789), ("ICMP", -1, -1)]
     for rule in rules:
         try:
             nova.security_group_rules.create(secgroup.id, rule[0], rule[1], rule[2], "10.0.0.0/8")
@@ -65,8 +65,11 @@ def create_node(node, node_name, nova, nics):
     flavor = nshell._find_flavor(nova, node.get('flavor', config.flavor_name))
     image = nshell._find_image(nova, node.get('image', config.image_name))
 
-    vm=nova.servers.create(instance_name, image, flavor, key_name=config.key_name,
-        security_groups=seclist, scheduler_hints={"force_hosts":server_name}, nics=nics)
+    # Pass hint for specific server if one was specified
+    hints = {} if server_name is None else {"force_hosts": server_name}
+
+    vm = nova.servers.create(instance_name, image, flavor, key_name=config.key_name,
+                            security_groups=seclist, scheduler_hints=hints, nics=nics)
     return {"vm":vm, "status": 1, "name": node_name,
         "instance_name": instance_name, "user_name": user_name }
 
@@ -499,26 +502,17 @@ if __name__ == "__main__":
             if reg == node.get('region', config.region_name):
                 vm_dict = create_node(node, node_name, nova, nics)
                 vm_dict["network_id"] = network_resource
-                vm_dict["region"] = reg
                 hosts[node_name] = vm_dict
+                update_vino_node_file([(vm_dict["vm"].id, node_name)], reg)
 
         for node_name, node in topology.switches.items():
             if reg == node.get('region', config.region_name):
                 vm_dict = create_node(node, node_name, nova, nics)
                 vm_dict["network_id"] = network_resource
-                vm_dict["region"] = reg
                 switches[node_name] = vm_dict
+                update_vino_node_file([(vm_dict["vm"].id, node_name)], reg)
 
     nodes = dict(hosts.items() + switches.items()) #Joint dict of all nodes
-
-    # Update ViNO node file
-    newNodes = {} # Dictionary from region to list of new nodes
-    for vmName, vmDict in nodes.items():
-        vmList = newNodes.setdefault(vmDict["region"], [])
-        vmList.append((vmDict["vm"].id, vmName))
-
-    for reg in regions:
-        update_vino_node_file(newNodes[reg], reg)
 
     print "\n===================="
     print "Checking status of VMs..."
