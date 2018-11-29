@@ -16,6 +16,7 @@
 # limitations under the License.
 #
 
+import os
 import sys
 import time
 import pdb
@@ -49,7 +50,7 @@ def add_secrules(nova, secgroup):
             nova.security_group_rules.create(secgroup.id, rule[0], rule[1], rule[2], "10.0.0.0/8")
         except Exception as e:
             if "rule already exists" not in e.message:
-                print e.message
+                raise
 
 def create_node(node, node_name, nova, nics):
     print "Creating " + node_name
@@ -216,7 +217,7 @@ def setup_switches(hosts_dict, switches_dict):
     for sw_name, sw_dict in switches_dict.items():
         sw_prop_map = topology.switches[sw_name] #The properties of the switch
         sw_topo_map = topology.topology[sw_name] #The list of interconnections
-        print "setting up {}".format(sw_name)
+        print "Setting up {}".format(sw_name)
 
         #ssh to VM
         ssh = paramiko.SSHClient()
@@ -271,7 +272,7 @@ def setup_switches(hosts_dict, switches_dict):
 
 def setup_hosts(hosts_dict, switches_dict):
     for host_name, host_dict in hosts_dict.items():
-        print "setting up {}".format(host_name)
+        print "Setting up {}".format(host_name)
         ssh = paramiko.SSHClient()
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         ssh.connect(host_dict["ip_addr"], username=host_dict["user_name"], key_filename=config.private_key_file)
@@ -304,26 +305,34 @@ def setup_hosts(hosts_dict, switches_dict):
                     count += 1
         ssh.close()
 
-#Delete VMs that match instance prefix
-def delete_vms(nova):
+# Delete VMs passed in from list
+# Returns list of deleted VMs in format of:
+#   [(VM UUID, VM NAME), (...), ...)
+def delete_vms(nova, oldVMList):
     global DELETE_OPTIONS, DELETE_CHOICE
 
+    oldVMIDs = [vm[0] for vm in oldVMList]
     region = nova.client.region_name
+    deleted = []
+
     for s in nova.servers.list():
-        if config.instance_prefix in s.name:
+        if s.id in oldVMIDs:
             while DELETE_CHOICE not in DELETE_OPTIONS:
-                print "\nWARNING: Found a pre-existing VM with the same prefix (%s) in region %s. Delete it?" % (s.name, region)
+                print "\nWARNING: Found a pre-existing VM created by ViNO (%s) in region %s. Delete it?" % (s.name, region)
                 DELETE_CHOICE = raw_input("         [yes / no / yesall / noall] => ")
                 DELETE_CHOICE = DELETE_CHOICE.lower()
                 if DELETE_CHOICE not in DELETE_OPTIONS:
                     print "Invalid option, try again."
 
             if DELETE_CHOICE in ("yes", "yesall"):
-                print "Deleting " + s.name
+                print "Deleting %s in %s" % (s.name, region)
                 s.delete()
+                deleted.append((s.id, s.name))
 
             if DELETE_CHOICE in ("yes", "no"):
                 DELETE_CHOICE = "" # Reset for next loop
+
+    return deleted
 
 #walks through the topology dict and
 #'completes' the topology, i.e.
@@ -355,51 +364,177 @@ def complete_topology():
 
     topo_map = dict(topo_list)
 
+# Returns dictionary of existing VMs from ViNO node file
+# Format of returned dict:
+#   { "regionName" : [(VM UUID, VM NAME), (...), ...], ... }
+# Default location for file: ~/.vino
+#
+# Can filter results via input parameter List 'relevantRegions'
+#   - If this is None, then don't filter (i.e. return all)
+def get_vino_node_file(relevantRegions):
+    old_nodes = {}
+
+    homePath = os.environ['HOME']
+    try:
+        nodeFile = open(homePath + '/.vino', 'r')
+    except IOError as e:
+        if "No such file or directory" not in e.strerror:
+            raise
+        else:
+            # Create file
+            nodeFile = open(homePath + '/.vino', 'w')
+            nodeFile.close()
+            return {}
+
+    # Node file format:
+    #   <REGION> <TENANT NAME> <VM UUID> <VM NAME>
+    # NOTE: Currently we do not support multi-tenant overlay, the tenant name
+    #       is just used to know which items to skip
+    for line in nodeFile:
+        try:
+            reg, tenant, vmUUID, vmName = line.split()
+            if relevantRegions is None or reg in relevantRegions:
+                # Lists returned by ref, so no need to re-store
+                vmList = old_nodes.setdefault(reg, [])
+                if tenant == config.tenant_name:
+                    vmList.append((vmUUID, vmName))
+        except:
+            import traceback; traceback.print_exc()
+            print line
+            sys.exit(1)
+
+    nodeFile.close()
+    return old_nodes
+
+# Updates the ViNO node file (assumes it already exists)
+# If delete = False (default), nodes from nodeList are appended
+# If delete = True, nodes from nodeList are removed (if found in file)
+#
+# Assumes nodeList is format of [(VM UUID, VM NAME), (...), ...)
+def update_vino_node_file(nodeList, region, delete = False):
+    homePath = os.environ['HOME']
+
+    try:
+        if delete:
+            nodeFile = open(homePath + '/.vino', 'r')
+            lines = nodeFile.readlines()
+            nodeFile.close()
+
+            vmIDsToDelete = [vm[0] for vm in nodeList]
+            nodeFile = open(homePath + '/.vino', 'w')
+            for line in lines:
+                reg, tenant, vmUUID, vmName = line.split()
+                if vmUUID not in vmIDsToDelete:
+                    nodeFile.write(line)
+
+            nodeFile.close()
+        else:
+            # Append to file
+            nodeFile = open(homePath + '/.vino', 'a')
+            for node in nodeList:
+                outLine = "%s %s %s %s\n" % (region, config.tenant_name, node[0], node[1])
+                nodeFile.write(outLine)
+
+            nodeFile.close()
+    except:
+        import traceback; traceback.print_exc()
+        sys.exit(1)
+
 if __name__ == "__main__":
 
     complete_topology()
+    regions = set()
+    for spec in topology.hosts.values():
+        regions.add(spec['region'])
 
-    #Create nova and quantum instance
-    nova = nclient.Client(config.username, config.password, config.tenant_name, config.auth_url, region_name=config.region_name, no_cache=True)
-    quantum = qclient.Client(username=config.username, password=config.password, tenant_name=config.tenant_name, auth_url=config.auth_url, region_name=config.region_name)
+    for spec in topology.switches.values():
+        regions.add(spec['region'])
+
+    # Read file to find any existing VMs
+    oldVMs = get_vino_node_file(regions)
+
+    # Create a nova and neutron clients per region
+    reg2nova = {}
+    reg2neutron = {}
+    for reg in regions:
+        reg2nova[reg] = nclient.Client(config.username, config.password, config.tenant_name, config.auth_url, region_name=reg, no_cache=True)
+        reg2neutron[reg] = qclient.Client(username=config.username, password=config.password, tenant_name=config.tenant_name, auth_url=config.auth_url, region_name=reg)
 
     #Delete any existing VMs
-    delete_vms(nova)
+    print "\n===================="
+    print "Checking for existing VMs from previous run(s)..."
+    print "===================="
+    for reg in oldVMs.keys():
+        deleted = delete_vms(reg2nova[reg], oldVMs[reg])
+        update_vino_node_file(deleted, reg, delete = True)
 
-    # Create security group if it doesn't exist, then populate it
-    seclist = [config.sec_group_name]
-    try:
-        secgroup = nshell._get_secgroup(nova, config.sec_group_name)
-    except Exception as e:
-        if "not found" in e.message:
-            print "Security group does not exist, creating..."
-            secgroup = nova.security_groups.create(config.sec_group_name, "For ViNO")
-        else:
-            raise
-
-    add_secrules(nova, secgroup)
-
-    #nic
-    network_resource = quantumv20.find_resourceid_by_name_or_id(quantum, 'network', config.tenant_name+'-net')
-    nic = {'net-id': network_resource, 'v4-fixed-ip': None}
-    nics = [nic]
-
+    print "\n===================="
+    print "Creating VMs for topology..."
+    print "===================="
     hosts = {} #map of host name to host dict
     switches = {} #map of switch name to switch dict
-    for node_name, node in topology.hosts.items():
-        vm_dict = create_node(node, node_name, nova, nics)
-        vm_dict["network_id"] = network_resource
-        hosts[node_name] = vm_dict
+    for reg in regions:
+        nova = reg2nova[reg]
+        neutron = reg2neutron[reg]
 
-    for node_name, node in topology.switches.items():
-        vm_dict = create_node(node, node_name, nova, nics)
-        vm_dict["network_id"] = network_resource
-        switches[node_name] = vm_dict
+        # Create security group if it doesn't exist, then populate it
+        seclist = [config.sec_group_name]
+        try:
+            secgroup = nshell._get_secgroup(nova, config.sec_group_name)
+        except Exception as e:
+            if "not found" in e.message:
+                print "Security group does not exist, creating..."
+                secgroup = nova.security_groups.create(config.sec_group_name, "For ViNO")
+            else:
+                raise
+        else:
+            add_secrules(nova, secgroup)
+
+        #nic
+        network_resource = quantumv20.find_resourceid_by_name_or_id(neutron, 'network', config.tenant_name+'-net')
+        nic = {'net-id': network_resource, 'v4-fixed-ip': None}
+        nics = [nic]
+
+        for node_name, node in topology.hosts.items():
+            if reg == node.get('region', config.region_name):
+                vm_dict = create_node(node, node_name, nova, nics)
+                vm_dict["network_id"] = network_resource
+                vm_dict["region"] = reg
+                hosts[node_name] = vm_dict
+
+        for node_name, node in topology.switches.items():
+            if reg == node.get('region', config.region_name):
+                vm_dict = create_node(node, node_name, nova, nics)
+                vm_dict["network_id"] = network_resource
+                vm_dict["region"] = reg
+                switches[node_name] = vm_dict
 
     nodes = dict(hosts.items() + switches.items()) #Joint dict of all nodes
 
+    # Update ViNO node file
+    newNodes = {} # Dictionary from region to list of new nodes
+    for vmName, vmDict in nodes.items():
+        vmList = newNodes.setdefault(vmDict["region"], [])
+        vmList.append((vmDict["vm"].id, vmName))
+
+    for reg in regions:
+        update_vino_node_file(newNodes[reg], reg)
+
+    print "\n===================="
+    print "Checking status of VMs..."
+    print "===================="
     check_server_status(nodes) #Returns when all servers are completed
     sanity_test(nodes) #Performs ping test on newly booted VMs and checks if OVS is installed
+
+    print "\n===================="
+    print "Setting up overlay topology..."
+    print "===================="
     setup_switches(hosts, switches)
     setup_hosts(hosts, switches)
+
+    print "\n===================="
+    print "Topology nodes information:"
+    print "===================="
     pretty_print(nodes)  #Pretty table
+
+    print "\nPlease log into your VMs and verify the overlay connectivity"
