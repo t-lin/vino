@@ -33,7 +33,6 @@ from quantumclient.v2_0 import client as qclient
 from quantumclient.quantum import v2_0 as quantumv20
 from prettytable import PrettyTable
 
-DELETE_OPTIONS = ('yes', 'no', 'yesall', 'noall')
 DELETE_CHOICE = ""
 
 
@@ -43,7 +42,6 @@ def add_secrules(nova, secgroup):
     parameters
         nova:-nova client object
     """
-    #TODO: Check rule does not exist, use secgroup.rules or nova.security_group_rules.find()
     rules = [("TCP", 22, 22), ("UDP", 4789, 4789), ("ICMP", -1, -1)]
     for rule in rules:
         try:
@@ -52,7 +50,7 @@ def add_secrules(nova, secgroup):
             if "rule already exists" not in e.message:
                 raise
 
-def create_node(node, node_name, nova, nics):
+def create_node(node, node_name, nova, seclist, nics):
     print "Creating " + node_name
 
     #Get params
@@ -70,21 +68,17 @@ def create_node(node, node_name, nova, nics):
 
     vm = nova.servers.create(instance_name, image, flavor, key_name=config.key_name,
                             security_groups=seclist, scheduler_hints=hints, nics=nics)
-    return {"vm":vm, "status": 1, "name": node_name,
-        "instance_name": instance_name, "user_name": user_name }
+    return {"vm":vm, "status": 1, "name": node_name, "region": region_name,
+                    "instance_name": instance_name, "user_name": user_name }
 
 def pretty_print(nodes):
+    ptable = PrettyTable(["VM UUID", "VM Name", "Region", "IPv4 Address"])
+
     for node_name, node in nodes.items():
-        n = node["vm"]
-        ptable = PrettyTable(["Property", "Value"])
-        ptable.add_row(["Node name",  node["name"]])
-        ptable.add_row(["VM name",    node["instance_name"]])
-        ptable.add_row(["Network ID", node["network_id"]])
-        ptable.add_row(["VM ID", n.id])
-        ptable.add_row(["Host",str(getattr(n, "OS-EXT-SRV-ATTR:host"))])
-        ptable.add_row(["Instance Name",str(getattr(n, "OS-EXT-SRV-ATTR:instance_name"))])
-        ptable.add_row(["Internal IP addr", node["ip_addr"]])
-        print ptable
+        vm = node["vm"]
+        ptable.add_row([vm.id, vm.name, node["region"], node["ip_addr"]])
+
+    print ptable
 
 def check_server_status(nodes):
     """
@@ -313,7 +307,9 @@ def setup_hosts(hosts_dict, switches_dict):
 # Both input and output lists have the following format:
 #   [(VM UUID, VM NAME), (...), ...)
 def delete_vms(nova, oldVMList):
-    global DELETE_OPTIONS, DELETE_CHOICE
+    global DELETE_CHOICE
+
+    DELETE_OPTIONS = ('yes', 'no', 'yesall', 'noall')
 
     oldVMIDs = [vm[0] for vm in oldVMList]
     region = nova.client.region_name
@@ -450,40 +446,19 @@ def update_vino_node_file(nodeList, region, delete = False):
         import traceback; traceback.print_exc()
         sys.exit(1)
 
-if __name__ == "__main__":
 
-    if len(sys.argv) > 2:
-        print "ERROR: Incorrect # of args"
-        print "Usage: ./vino [cleanup (optional)]"
-        print "\tTo deploy a topology, run: ./vino"
-        print "\tTo clean up old topology nodes, run: ./vino cleanup"
-        sys.exit();
-    else:
-        if len(sys.argv) == 2:
-            if sys.argv[1] != "cleanup":
-                print "ERROR: Unknown argument. Only 'cleanup' currently accepted."
-                sys.exit();
-
-            bCleanup = True
-        else:
-            bCleanup = False
-
+def deployOverlay():
     complete_topology()
     regions = set()
 
-    if bCleanup:
-        # Read file to find any existing VMs
-        oldVMs = get_vino_node_file()
-        regions = oldVMs.keys()
-    else:
-        # Get list of regions from toplogy file
-        for spec in topology.hosts.values():
-            regions.add(spec['region'])
+    # Get list of regions from toplogy file
+    for spec in topology.hosts.values():
+        regions.add(spec['region'])
 
-        for spec in topology.switches.values():
-            regions.add(spec['region'])
+    for spec in topology.switches.values():
+        regions.add(spec['region'])
 
-        oldVMs = get_vino_node_file(regions)
+    oldVMs = get_vino_node_file(regions)
 
     # Create a nova and neutron clients per region
     reg2nova = {}
@@ -500,10 +475,7 @@ if __name__ == "__main__":
         deleted = delete_vms(reg2nova[reg], oldVMs[reg])
         update_vino_node_file(deleted, reg, delete = True)
 
-    print "Done cleanup of old VMs."
-
-    if bCleanup:
-        sys.exit();
+    print "Done check for old VMs."
 
     print "\n===================="
     print "Creating VMs for topology..."
@@ -534,14 +506,14 @@ if __name__ == "__main__":
 
         for node_name, node in topology.hosts.items():
             if reg == node.get('region', config.region_name):
-                vm_dict = create_node(node, node_name, nova, nics)
+                vm_dict = create_node(node, node_name, nova, seclist, nics)
                 vm_dict["network_id"] = network_resource
                 hosts[node_name] = vm_dict
                 update_vino_node_file([(vm_dict["vm"].id, vm_dict["instance_name"])], reg)
 
         for node_name, node in topology.switches.items():
             if reg == node.get('region', config.region_name):
-                vm_dict = create_node(node, node_name, nova, nics)
+                vm_dict = create_node(node, node_name, nova, seclist, nics)
                 vm_dict["network_id"] = network_resource
                 switches[node_name] = vm_dict
                 update_vino_node_file([(vm_dict["vm"].id, vm_dict["instance_name"])], reg)
@@ -566,3 +538,100 @@ if __name__ == "__main__":
     pretty_print(nodes)  #Pretty table
 
     print "\nPlease log into your VMs and verify the overlay connectivity"
+    return
+
+
+def cleanupOverlay():
+    # Read file to find any existing VMs
+    oldVMs = get_vino_node_file()
+    regions = oldVMs.keys()
+
+    # Create a nova and neutron clients per region
+    reg2nova = {}
+    for reg in regions:
+        reg2nova[reg] = nclient.Client(config.username, config.password, config.tenant_name, config.auth_url, region_name=reg, no_cache=True)
+
+    #Delete any existing VMs
+    print "===================="
+    print "Checking for existing VMs from previous run(s)..."
+    print "===================="
+    for reg in oldVMs.keys():
+        deleted = delete_vms(reg2nova[reg], oldVMs[reg])
+        update_vino_node_file(deleted, reg, delete = True)
+
+    print "Done cleanup of old VMs."
+
+    return
+
+
+def listOverlay():
+    # Read file to find any existing VMs
+    oldVMs = get_vino_node_file()
+    regions = oldVMs.keys()
+
+    # Create a nova and neutron clients per region
+    reg2nova = {}
+    for reg in regions:
+        reg2nova[reg] = nclient.Client(config.username, config.password, config.tenant_name, config.auth_url, region_name=reg, no_cache=True)
+
+    ptable = PrettyTable(["VM UUID", "VM Name", "Region", "IPv4 Address"])
+
+    print "===================="
+    print "Checking for existing VMs from previous run(s)..."
+    print "===================="
+    for reg, nodeList in oldVMs.items():
+        vmIDs = [vm[0] for vm in nodeList]
+        nova = reg2nova[reg]
+        servers = nova.servers.list()
+
+        for serv in servers:
+            if serv.id in vmIDs:
+                ipv4_addr = serv.networks.popitem()[1][0] # Assumes VM has 1 interface
+                ptable.add_row([serv.id, serv.name, reg, ipv4_addr])
+
+    if ptable._rows:
+        print ptable
+    else:
+        print "None found"
+
+
+def printHelp():
+    print "Usage: ./vino [subcommand]"
+    print "\tTo print this help message again, run: ./vino help"
+    print "\tTo deploy a topology, run: ./vino deploy"
+    print "\t  - Note: Deploy will call 'cleanup' on regions within the topology file"
+    print "\tTo list VMs from all past deployments, run: ./vino list"
+    print "\tTo clean up old topology nodes, run: ./vino cleanup"
+    return
+
+if __name__ == "__main__":
+    SUBCOMMANDS = ('help', 'deploy', 'list', 'cleanup')
+
+    if len(sys.argv) > 2:
+        print "ERROR: Incorrect # of args"
+        print
+        printHelp()
+        sys.exit();
+    else:
+        if len(sys.argv) == 2:
+            if sys.argv[1] not in SUBCOMMANDS:
+                print "ERROR: Unknown subcommand argument."
+                print "       Currently subaccepted commands are: %s" % str(SUBCOMMANDS).strip('()')
+                print
+                printHelp()
+                sys.exit();
+
+    if len(sys.argv) == 1:
+        # Called with no arguments
+        printHelp()
+    elif len(sys.argv) == 2:
+        if sys.argv[1] == "help":
+            printHelp()
+        elif sys.argv[1] == "deploy":
+            deployOverlay()
+        elif sys.argv[1] == "list":
+            listOverlay()
+        elif sys.argv[1] == "cleanup":
+            cleanupOverlay()
+
+    sys.exit();
