@@ -27,10 +27,10 @@ import subprocess
 
 import topology2 as topology
 import config2 as config
-import novaclient.v1_1.client as nclient
+import novaclient.v1_1.client as novaClient
 import novaclient.v1_1.shell as nshell
-from quantumclient.v2_0 import client as qclient
-from quantumclient.quantum import v2_0 as quantumv20
+from neutronclient.v2_0 import client as neutronClient
+from neutronclient.neutron import v2_0 as neutronv20
 from prettytable import PrettyTable
 
 DELETE_CHOICE = ""
@@ -464,8 +464,8 @@ def deployOverlay():
     reg2nova = {}
     reg2neutron = {}
     for reg in regions:
-        reg2nova[reg] = nclient.Client(config.username, config.password, config.tenant_name, config.auth_url, region_name=reg, no_cache=True)
-        reg2neutron[reg] = qclient.Client(username=config.username, password=config.password, tenant_name=config.tenant_name, auth_url=config.auth_url, region_name=reg)
+        reg2nova[reg] = novaClient.Client(config.username, config.password, config.tenant_name, config.auth_url, region_name=reg, no_cache=True)
+        reg2neutron[reg] = neutronClient.Client(username=config.username, password=config.password, tenant_name=config.tenant_name, auth_url=config.auth_url, region_name=reg)
 
     #Delete any existing VMs
     print "\n===================="
@@ -500,7 +500,7 @@ def deployOverlay():
             add_secrules(nova, secgroup)
 
         #nic
-        network_resource = quantumv20.find_resourceid_by_name_or_id(neutron, 'network', config.tenant_name+'-net')
+        network_resource = neutronv20.find_resourceid_by_name_or_id(neutron, 'network', config.tenant_name+'-net')
         nic = {'net-id': network_resource, 'v4-fixed-ip': None}
         nics = [nic]
 
@@ -549,7 +549,7 @@ def cleanupOverlay():
     # Create a nova and neutron clients per region
     reg2nova = {}
     for reg in regions:
-        reg2nova[reg] = nclient.Client(config.username, config.password, config.tenant_name, config.auth_url, region_name=reg, no_cache=True)
+        reg2nova[reg] = novaClient.Client(config.username, config.password, config.tenant_name, config.auth_url, region_name=reg, no_cache=True)
 
     #Delete any existing VMs
     print "===================="
@@ -572,7 +572,7 @@ def listOverlay():
     # Create a nova and neutron clients per region
     reg2nova = {}
     for reg in regions:
-        reg2nova[reg] = nclient.Client(config.username, config.password, config.tenant_name, config.auth_url, region_name=reg, no_cache=True)
+        reg2nova[reg] = novaClient.Client(config.username, config.password, config.tenant_name, config.auth_url, region_name=reg, no_cache=True)
 
     ptable = PrettyTable(["VM UUID", "VM Name", "Region", "IPv4 Address"])
 
