@@ -21,6 +21,7 @@ import sys
 import time
 import pdb
 import itertools
+import hashlib
 
 import paramiko
 import subprocess
@@ -53,15 +54,15 @@ def add_secrules(nova, secgroup):
 def create_node(node, node_name, nova, seclist, nics):
     print "Creating " + node_name
 
-    #Get params
+    # Get params
     user_name =  node.get('vm_user_name', config.vm_user_name)
     server_name = node.get('server', None)
     region_name = node.get('region', config.region_name)
     instance_name = node.get('name', config.instance_prefix + node_name)
 
-    #Search for image and flavor
-    flavor = nshell._find_flavor(nova, node.get('flavor', config.flavor_name))
-    image = nshell._find_image(nova, node.get('image', config.image_name))
+    # Search for image and flavor
+    flavor = nova.flavors.find(name=node.get('flavor', config.flavor_name), is_public=None)
+    image = nova.images.find(name=node.get('image', config.image_name))
 
     # Pass hint for specific server if one was specified
     hints = {} if server_name is None else {"force_hosts": server_name}
@@ -190,24 +191,27 @@ def sanity_test(nodes):
 
         ssh.close()
 
-def _get_vm_id(node):
-    vm_id = 0
-    #Extract switch number
-    if node.lower().startswith('sw'):
-       vm_id = int(node.lower()[2:]) * 100
-    #Extract host number
-    elif node.lower().startswith('h'):
-       vm_id = int(node.lower()[1:])
-    return vm_id
+# Generates a unique VXLAN Network Identifier (VNI) given the names of two
+# nodes as strings. Which is node1 and which is node2 does not matter.
+# General method:
+#   - XOR hashes of node1 and node2's names, then mod by 65536, and +1
+#
+# Input:
+#   - node1: A VM object created by Nova
+#   - node2: A VM object created by Nova
+#
+# Returns:
+#   - A unique number between 1 and 65536 (inclusive)
+def generateVNI(node1, node2):
+    assert type(node1) is (str, buffer)
+    assert type(node2) is (str, buffer)
+    assert node1 != node2
 
-def _get_vni(node1, node2):
-    #Returns same VNI between two VMs
-    vid1 = _get_vm_id(node1)
-    vid2 = _get_vm_id(node2)
+    n1hash = hashlib.md5(node1).hexdigest()
+    n2hash = hashlib.md5(node2).hexdigest()
+    vni = ((int(n1hash, 16) ^ int(n2hash, 16)) % 2**16) + 1
 
-    vni =  max(vid1, vid2) + min(vid1, vid2)
-    #print "%s --> %s : %s" %(node1, node2, vni)
-    return vni
+    return int(vni)
 
 def setup_switches(hosts_dict, switches_dict):
     #Iterate over all switches
@@ -257,11 +261,11 @@ def setup_switches(hosts_dict, switches_dict):
         for node in sw_topo_map:
             # handle hosts
             if isinstance(node, tuple):
-                vni = _get_vni(node[0], sw_name)
+                vni = generateVNI(node[0], sw_name)
                 node_ip = hosts_dict[node[0]]["ip_addr"]
             # handle switches
             else:
-                vni = _get_vni(node, sw_name)
+                vni = generateVNI(node, sw_name)
                 node_ip = switches_dict[node]["ip_addr"]
             ssh.exec_command("sudo ovs-vsctl add-port %s vxlan%s -- set interface vxlan%s type=vxlan options:remote_ip=%s options:key=%s" % (bridge_name, vni, vni, node_ip, vni))
             time.sleep(1)
@@ -295,7 +299,7 @@ def setup_hosts(hosts_dict, switches_dict):
                     #get switch ip addr
                     switch_ip = switches_dict[sw_name]["ip_addr"]
 
-                    vni = _get_vni(sw_name, host_name)
+                    vni = generateVNI(sw_name, host_name)
                     ssh.exec_command("sudo ovs-vsctl add-port %s vxlan%s -- set interface vxlan%s type=vxlan options:remote_ip=%s options:key=%s" %
                         (bridge_name,vni,vni,switch_ip, vni))
                     time.sleep(1)
