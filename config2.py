@@ -11,28 +11,27 @@ for cases where they were left out
 '''
 
 
-username=
-password=
-auth_url='http://iam.savitestbed.ca:5000/v2.0/'
+username=''
+password=''
+auth_url='http://iamv3.savitestbed.ca:5000/v2.0/'
 
 # Prefix, prepend to instance names
-instance_prefix=
+instance_prefix=''
 
 # Key-pair name
-key_name=
+key_name=''
 
 # Private key file path (needed to auto-SSH into the VMs)
 # Example private key file path: '/home/savitb/user1/.ssh/id_rsa'
 private_key_file='/home/savitb/' + username + '/.ssh/id_rsa'
 
 # Default parameters for Nodes if region wasn't specified in the topology2.py file
-region_name=
-tenant_name=
+region_name=''
+tenant_name=''
 
 # Default instances properties
-#image_name="ECE1548.OFLab"
-image_name="Ubuntu64-3-OVS"
-flavor_name="m1.small"
-sec_group_name=
+image_name='ECE1548.OFLab'
+flavor_name='m1.small'
+sec_group_name=''
 vm_user_name="ubuntu"
 

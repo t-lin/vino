@@ -203,8 +203,8 @@ def sanity_test(nodes):
 # Returns:
 #   - A unique number between 1 and 65536 (inclusive)
 def generateVNI(node1, node2):
-    assert type(node1) is (str, buffer)
-    assert type(node2) is (str, buffer)
+    assert type(node1) in (str, buffer)
+    assert type(node2) in (str, buffer)
     assert node1 != node2
 
     n1hash = hashlib.md5(node1).hexdigest()
@@ -450,9 +450,41 @@ def update_vino_node_file(nodeList, region, delete = False):
         import traceback; traceback.print_exc()
         sys.exit(1)
 
+def valid_topology_nodes():
+    isValid = True
+    switches = topology.switches.keys() # From 'switches' dict
+    hosts = topology.hosts.keys() # From 'hosts' dict
+
+    switchesInTopo = set(topology.topology.keys())
+    hostsInTopo = set()
+
+    for neighbours in topology.topology.values():
+        for node in neighbours:
+            if type(node) is tuple: # Node is a host
+                hostsInTopo.add(node[0])
+            else: # Node is a switch
+                switchesInTopo.add(node)
+
+    for switch in switchesInTopo:
+        if switch not in switches:
+            print "ERROR: Incomplete topology definition " + \
+                    "('%s' found in 'topology' but not in 'switches')" % switch
+            isValid = False
+
+    for host in hostsInTopo:
+        if host not in hosts:
+            print "ERROR: Incomplete topology definition " + \
+                    "('%s' found in 'topology' but not in 'hosts')" % host
+            isValid = False
+
+    return isValid
+
 
 def deployOverlay():
     complete_topology()
+    if not valid_topology_nodes():
+        return
+
     regions = set()
 
     # Get list of regions from toplogy file
